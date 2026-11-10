@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reliable intake demo</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.55 system-ui; }
+  body { margin: 0; }
+  main { max-width: 38rem; padding: clamp(1rem, 5vw, 3rem); margin: auto; }
+  h1 { line-height: 1.12; margin: .4rem 0; }
+  form { display: grid; gap: 1rem; }
+  label { display: grid; gap: .3rem; }
+  input, select, button { font: inherit; min-height: 44px; padding: 0 .65rem; }
+  input, select { box-sizing: border-box; min-width: 0; width: 100%; }
+  #result { overflow-wrap: anywhere; }
+  .actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+  .actions button { flex: 1; }
+  p { margin-block: .4rem 1rem; }
+</style>
+<main>
+  <h1>Reliable request intake</h1>
+  <p>Use synthetic details to see a saved receipt, a safe retry, and an actionable error.</p>
+  <form id="intake">
+    <label>Title<input name="title" value="Build a demo checklist" maxlength="100"></label>
+    <label>Category<select name="category"><option value="build">Build</option><option value="repair">Repair</option><option value="research">Research</option></select></label>
+    <div class="actions"><button type="submit">Save request</button><button type="button" id="reset">Start a new request</button></div>
+  </form>
+  <p id="result" role="status" aria-live="polite"></p>
+</main>
+<script type="module">
+  const form = document.querySelector("#intake"), result = document.querySelector("#result");
+  const submit = form.querySelector('button[type="submit"]'), reset = document.querySelector("#reset");
+  const storageKey = "reliable-intake-request";
+  let attempt = null;
+  function remember(value) {
+    if (value) sessionStorage.setItem(storageKey, JSON.stringify(value));
+    else sessionStorage.removeItem(storageKey);
+    attempt = value;
+  }
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? "null");
+    if (saved && typeof saved.key === "string" && typeof saved.title === "string" &&
+        ["build","repair","research"].includes(saved.category) && typeof saved.confirmed === "boolean") {
+      attempt = saved;
+      form.elements.title.value = saved.title;
+      form.elements.category.value = saved.category;
+      submit.textContent = "Retry same request";
+      result.textContent = "Request restored. Retry to retrieve its receipt.";
+    }
+  } catch {}
+  reset.addEventListener("click", () => {
+    try { remember(null); }
+    catch { result.textContent = "The previous request could not be cleared. Retry in this tab."; return; }
+    submit.textContent = "Save request";
+    result.textContent = "Ready for a new request.";
+    form.elements.title.focus();
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    const {title, category} = Object.fromEntries(new FormData(form));
+    if (attempt && !attempt.confirmed && (title !== attempt.title || category !== attempt.category)) {
+      result.textContent = "Reload this tab to restore the unconfirmed request, or start a new request.";
+      return;
+    }
+    if (!attempt) {
+      try { remember({key:crypto.randomUUID(),title,category,confirmed:false}); }
+      catch { result.textContent = "Allow session storage so the request can be retried after a reload."; return; }
+    }
+    submit.disabled = reset.disabled = true;
+    result.textContent = "Saving…";
+    try {
+      const response = await fetch("/api/requests", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({title,category,key:attempt.key})});
+      const value = await response.json();
+      result.textContent = response.ok
+        ? `${value.reused ? "Reused existing receipt" : "Saved request"} · ${value.title} · ${value.id}`
+        : value.error;
+      if (response.ok) {
+        submit.textContent = "Retry same request";
+        attempt = {...attempt,confirmed:true};
+        try { remember(attempt); } catch {}
+      } else if (response.status === 422 && !attempt.confirmed) {
+        try { remember(null); submit.textContent = "Save request"; }
+        catch { result.textContent = "The request was rejected, but its saved retry could not be cleared."; }
+      }
+    } catch {
+      submit.textContent = "Retry same request";
+      result.textContent = "The save could not be confirmed. Retry to retrieve the original receipt.";
+    }
+    finally { submit.disabled = reset.disabled = false; }
+  });
+</script>
